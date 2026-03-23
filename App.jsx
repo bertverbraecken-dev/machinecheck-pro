@@ -1135,48 +1135,50 @@ function AutoInvullenPanel({ docs, onAntwoorden }) {
   const [loading, setLoading] = useState(false);
   const [voortgang, setVoortgang] = useState("");
   const [resultaat, setResultaat] = useState(null);
-  const [eigenFotos, setEigenFotos] = useState([]);
-  const [eigenDocs, setEigenDocs] = useState([]);
+  // Selectie van bestaande docs (index in docs array)
+  const [geselecteerd, setGeselecteerd] = useState([]);
+  // Extra nieuwe foto's
+  const [extraFotos, setExtraFotos] = useState([]);
   const refFoto = useRef();
-  const refDoc = useRef();
 
-  const handleFotos = async (e) => {
-    const files = Array.from(e.target.files);
-    const imgs = await Promise.all(files.map(f => resizeImg(f, 800)));
-    setEigenFotos(p => [...p, ...imgs]);
-    e.target.value = "";
+  // Toggle selectie van bestaand doc
+  const toggleDoc = (i) => {
+    setGeselecteerd(p => p.includes(i) ? p.filter(x=>x!==i) : [...p, i]);
+  };
+  // Alle docs selecteren
+  const selecteerAlle = () => {
+    if (geselecteerd.length === docs.length) setGeselecteerd([]);
+    else setGeselecteerd(docs.map((_, i) => i));
   };
 
-  const handleDocs = async (e) => {
+  const handleExtraFotos = async (e) => {
     const files = Array.from(e.target.files);
-    for (const file of files) {
-      const b64 = await fileToBase64(file);
-      setEigenDocs(p => [...p, { name: file.name, b64, mime: file.type, size: file.size }]);
-    }
+    const imgs = await Promise.all(files.map(f => resizeImg(f, 800)));
+    setExtraFotos(p => [...p, ...imgs]);
     e.target.value = "";
   };
 
   const analyseer = async () => {
-    // Combineer alles: geüploade docs uit de documentenpagina + eigen fotos + eigen docs
+    // Bouw lijst van te analyseren items
+    const geselecteerdeDocs = geselecteerd.map(i => docs[i]).filter(d => d.mime?.startsWith('image/'));
     const allImgDocs = [
-      ...docs.filter(d => d.mime?.startsWith('image/')),
-      ...eigenDocs.filter(d => d.mime?.startsWith('image/')),
-      ...eigenFotos.map((b64, i) => ({ b64, mime: 'image/jpeg', name: `foto_${i+1}.jpg` })),
+      ...geselecteerdeDocs,
+      ...extraFotos.map((b64, i) => ({ b64, mime: 'image/jpeg', name: `foto_${i+1}.jpg` })),
     ];
 
     if (allImgDocs.length === 0) {
-      setVoortgang("⚠️ Upload minstens 1 foto of afbeelding van het verslag/toestel.");
+      setVoortgang("⚠️ Selecteer minstens 1 document/foto hieronder, of upload nieuwe foto's.");
       return;
     }
 
     setLoading(true);
     setResultaat(null);
-    setVoortgang(`🤖 AI analyseert ${allImgDocs.length} foto('s)/document(en)...`);
+    setVoortgang(`🤖 AI analyseert ${allImgDocs.length} item(s)... dit kan ~30 seconden duren`);
     try {
       const antw = await callAIAutoInvullen(allImgDocs);
       const count = Object.keys(antw).length;
       setResultaat({ antw, count });
-      setVoortgang(`✅ ${count} vragen automatisch ingevuld!`);
+      setVoortgang(`✅ ${count} vragen klaar!`);
     } catch(e) {
       setVoortgang("⚠️ Fout bij analyseren. Probeer opnieuw.");
     }
@@ -1184,87 +1186,142 @@ function AutoInvullenPanel({ docs, onAntwoorden }) {
   };
 
   const toepassen = () => {
-    if (resultaat?.antw) {
-      onAntwoorden(resultaat.antw);
-    }
+    if (resultaat?.antw) onAntwoorden(resultaat.antw);
   };
 
-  const totaalItems = docs.filter(d=>d.mime?.startsWith('image/')).length + eigenFotos.length + eigenDocs.filter(d=>d.mime?.startsWith('image/')).length;
+  const aantalGeselecteerd = geselecteerd.filter(i => docs[i]?.mime?.startsWith('image/')).length + extraFotos.length;
+  const aantalNietAfbeelding = geselecteerd.filter(i => !docs[i]?.mime?.startsWith('image/')).length;
 
   return (
     <div style={{background:"#0a1428",border:`2px solid ${C.yellow}`,borderRadius:8,padding:20,marginBottom:14}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
-        <span style={{fontSize:24}}>🤖</span>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16}}>
+        <span style={{fontSize:26}}>🤖</span>
         <div>
           <div style={{fontSize:13,fontWeight:800,color:C.yellow,letterSpacing:1}}>AUTO-INVULLEN VIA AI</div>
-          <div style={{fontSize:11,color:C.muted}}>Upload foto's van het toestel of een vorig verslag → AI vult de volledige checklist automatisch in</div>
+          <div style={{fontSize:11,color:C.muted}}>Selecteer documenten of upload foto's → AI vult alle 19 secties automatisch in</div>
         </div>
       </div>
 
-      {/* Upload zone */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
-        <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:14,textAlign:"center"}}>
-          <div style={{fontSize:28,marginBottom:6}}>📸</div>
-          <div style={{fontSize:11,fontWeight:700,color:C.text,marginBottom:4}}>Foto's van het toestel</div>
-          <div style={{fontSize:10,color:C.muted,marginBottom:10}}>Max. 20 foto's · AI ziet wat conform/niet conform is</div>
-          <Btn variant="blue" onClick={()=>refFoto.current.click()} disabled={loading} style={{fontSize:10,padding:"7px 14px",width:"100%",justifyContent:"center"}}>
-            📷 Foto's selecteren {eigenFotos.length>0?`(${eigenFotos.length})` :""}
-          </Btn>
-          <input ref={refFoto} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleFotos}/>
+      {/* STAP 1: Selecteer uit geüploade docs */}
+      <div style={{marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.text,letterSpacing:1}}>
+            STAP 1 — Selecteer geüploade documenten
+          </div>
+          {docs.length > 0 && (
+            <button onClick={selecteerAlle}
+              style={{fontSize:10,color:C.yellow,background:"transparent",border:`1px solid ${C.yellow}44`,borderRadius:3,padding:"3px 8px",cursor:"pointer",fontFamily:"sans-serif"}}>
+              {geselecteerd.length === docs.length ? "✕ Deselecteer alle" : "✓ Selecteer alle"}
+            </button>
+          )}
         </div>
 
-        <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:14,textAlign:"center"}}>
-          <div style={{fontSize:28,marginBottom:6}}>📄</div>
-          <div style={{fontSize:11,fontWeight:700,color:C.text,marginBottom:4}}>Foto van vorig verslag</div>
-          <div style={{fontSize:10,color:C.muted,marginBottom:10}}>Foto/scan van papieren verslag · AI leest en hergebruikt</div>
-          <Btn variant="ghost" onClick={()=>refDoc.current.click()} disabled={loading} style={{fontSize:10,padding:"7px 14px",width:"100%",justifyContent:"center"}}>
-            🖼️ Verslag-foto {eigenDocs.length>0?`(${eigenDocs.length})`:""}
-          </Btn>
-          <input ref={refDoc} type="file" accept="image/*,.jpg,.jpeg,.png" multiple style={{display:"none"}} onChange={handleDocs}/>
-        </div>
+        {docs.length === 0 ? (
+          <div style={{background:C.bg,border:`1px dashed ${C.border}`,borderRadius:6,padding:16,textAlign:"center"}}>
+            <div style={{fontSize:11,color:"#445",marginBottom:8}}>Nog geen documenten geüpload hierboven</div>
+            <div style={{fontSize:10,color:"#334"}}>Upload documenten in de sectie "Documenten uploaden" om ze hier te selecteren</div>
+          </div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:220,overflowY:"auto",paddingRight:4}}>
+            {docs.map((doc, i) => {
+              const dt = DOC_TYPES.find(d => d.key === doc.type);
+              const isImg = doc.mime?.startsWith('image/');
+              const isSelected = geselecteerd.includes(i);
+              return (
+                <div key={doc.id||i} onClick={()=>toggleDoc(i)}
+                  style={{
+                    display:"flex",alignItems:"center",gap:10,padding:"10px 12px",
+                    background: isSelected ? "#0d1f0d" : C.bg,
+                    border: `1px solid ${isSelected ? C.green : C.border}`,
+                    borderRadius:6, cursor:"pointer", transition:"all .15s",
+                    opacity: isImg ? 1 : 0.5,
+                  }}>
+                  {/* Checkbox */}
+                  <div style={{
+                    width:18, height:18, borderRadius:3, border:`2px solid ${isSelected?C.green:C.border}`,
+                    background: isSelected ? C.green : "transparent",
+                    display:"flex", alignItems:"center", justifyContent:"center",
+                    flexShrink:0, fontSize:11, color:"#000", fontWeight:800,
+                  }}>
+                    {isSelected && "✓"}
+                  </div>
+                  {/* Thumbnail of icon */}
+                  {isImg ? (
+                    <img src={doc.b64} style={{width:36,height:36,objectFit:"cover",borderRadius:3,flexShrink:0,border:`1px solid ${C.border}`}} alt=""/>
+                  ) : (
+                    <div style={{width:36,height:36,background:"#1a2030",borderRadius:3,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>
+                      {dt?.icon||"📄"}
+                    </div>
+                  )}
+                  {/* Info */}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,fontWeight:700,color:isSelected?C.green:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.name}</div>
+                    <div style={{fontSize:9,color:C.muted}}>{doc.label} · {(doc.size/1024).toFixed(0)} KB {!isImg&&"· ⚠️ geen afbeelding"}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {aantalNietAfbeelding > 0 && (
+          <div style={{fontSize:10,color:"#ff8844",marginTop:6,padding:"5px 8px",background:"#1a0808",borderRadius:4,border:"1px solid #ff330022"}}>
+            ⚠️ {aantalNietAfbeelding} geselecteerd bestand(en) zijn geen afbeelding (PDF/Word) en kunnen niet rechtstreeks gelezen worden door de AI. Maak er een screenshot/foto van.
+          </div>
+        )}
       </div>
 
-      {/* Preview thumbnails */}
-      {(eigenFotos.length > 0 || eigenDocs.length > 0) && (
-        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12,padding:10,background:C.bg,borderRadius:6}}>
-          {eigenFotos.map((src,i)=>(
-            <div key={i} style={{position:"relative"}}>
-              <img src={src} style={{width:52,height:52,objectFit:"cover",borderRadius:4,border:`1px solid ${C.yellow}44`}} alt=""/>
-              <button onClick={()=>setEigenFotos(p=>p.filter((_,j)=>j!==i))}
-                style={{position:"absolute",top:-4,right:-4,background:C.red,color:"#fff",border:"none",borderRadius:"50%",width:15,height:15,fontSize:9,cursor:"pointer",fontWeight:800}}>×</button>
-            </div>
-          ))}
-          {eigenDocs.map((d,i)=>(
-            <div key={i} style={{position:"relative",width:52,height:52,background:"#1a2030",borderRadius:4,border:`1px solid ${C.border}`,display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:2}}>
-              <span style={{fontSize:18}}>📄</span>
-              <span style={{fontSize:7,color:C.muted,textAlign:"center",overflow:"hidden",maxWidth:48}}>{d.name.substring(0,10)}</span>
-              <button onClick={()=>setEigenDocs(p=>p.filter((_,j)=>j!==i))}
-                style={{position:"absolute",top:-4,right:-4,background:C.red,color:"#fff",border:"none",borderRadius:"50%",width:15,height:15,fontSize:9,cursor:"pointer",fontWeight:800}}>×</button>
-            </div>
-          ))}
+      {/* STAP 2: Extra foto's uploaden */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.text,letterSpacing:1,marginBottom:8}}>
+          STAP 2 — Extra foto's van het toestel toevoegen (optioneel)
         </div>
-      )}
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <Btn variant="blue" onClick={()=>refFoto.current.click()} disabled={loading} style={{fontSize:10,padding:"8px 14px"}}>
+            📷 Foto's toevoegen {extraFotos.length>0?`(${extraFotos.length})`:""}
+          </Btn>
+          <input ref={refFoto} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleExtraFotos}/>
+          {extraFotos.length>0&&(
+            <button onClick={()=>setExtraFotos([])} style={{fontSize:10,color:C.red,background:"transparent",border:`1px solid ${C.red}44`,borderRadius:3,padding:"4px 8px",cursor:"pointer",fontFamily:"sans-serif"}}>
+              🗑️ Wis alle foto's
+            </button>
+          )}
+        </div>
+        {extraFotos.length>0&&(
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:10}}>
+            {extraFotos.map((src,i)=>(
+              <div key={i} style={{position:"relative"}}>
+                <img src={src} style={{width:56,height:56,objectFit:"cover",borderRadius:4,border:`1px solid ${C.yellow}44`,display:"block"}} alt=""/>
+                <button onClick={()=>setExtraFotos(p=>p.filter((_,j)=>j!==i))}
+                  style={{position:"absolute",top:-5,right:-5,background:C.red,color:"#fff",border:"none",borderRadius:"50%",width:16,height:16,fontSize:9,cursor:"pointer",fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
-      {/* Info over docs die al geladen zijn */}
-      {docs.filter(d=>d.mime?.startsWith('image/')).length > 0 && (
-        <div style={{fontSize:10,color:"#4466aa",background:"#0a1020",border:"1px solid #2244aa33",borderRadius:4,padding:"6px 10px",marginBottom:10}}>
-          ℹ️ {docs.filter(d=>d.mime?.startsWith('image/')).length} document(en) van hierboven worden ook meegestuurd
+      {/* Samenvatting selectie */}
+      {aantalGeselecteerd > 0 && (
+        <div style={{fontSize:10,color:"#7abfa0",background:"#071410",border:"1px solid #1a4030",borderRadius:4,padding:"7px 12px",marginBottom:12}}>
+          ✓ {aantalGeselecteerd} item(s) geselecteerd voor analyse
+          {geselecteerd.filter(i=>docs[i]?.mime?.startsWith('image/')).length>0 && ` · ${geselecteerd.filter(i=>docs[i]?.mime?.startsWith('image/')).length} doc(s)`}
+          {extraFotos.length>0 && ` · ${extraFotos.length} foto('s)`}
         </div>
       )}
 
       {/* Analyseer knop */}
       <Btn
         onClick={analyseer}
-        disabled={loading || totaalItems === 0}
-        style={{padding:"11px 20px",fontSize:12,width:"100%",justifyContent:"center"}}
+        disabled={loading || aantalGeselecteerd === 0}
+        style={{padding:"12px 20px",fontSize:12,width:"100%",justifyContent:"center"}}
       >
-        {loading ? "⏳ AI analyseert..." : totaalItems > 0 ? `🤖 Analyseer ${totaalItems} item(s) & vul checklist in` : "📸 Upload eerst foto's hierboven"}
+        {loading ? "⏳ AI analyseert alle secties..." : aantalGeselecteerd > 0 ? `🤖 Analyseer ${aantalGeselecteerd} item(s) & vul checklist in` : "← Selecteer eerst documenten of foto's"}
       </Btn>
 
       {/* Status */}
       {voortgang && (
         <div style={{background:voortgang.startsWith("⚠️")?"#1a0808":"#071410",border:`1px solid ${voortgang.startsWith("⚠️")?"#ff333344":"#1a4030"}`,borderRadius:4,padding:10,marginTop:10,fontSize:11,color:voortgang.startsWith("⚠️")?"#ff8888":"#7abfa0"}}>
-          {loading && "⟳ "}{voortgang}
+          {loading&&<span style={{marginRight:6}}>⟳</span>}{voortgang}
         </div>
       )}
 
