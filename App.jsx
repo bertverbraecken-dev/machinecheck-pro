@@ -154,6 +154,121 @@ Coördinaten: relatief 0.0-1.0. Kleuren: gevaar=#ff3333 oplossing=#ffd000 veilig
   }
 }
 
+// ─── AI AUTO-INVULLEN VIA DOCUMENT ───────────────────────────────────────────
+async function callAIAutoInvullen(docs) {
+  const vragenLijst = SECTIONS.flatMap(s =>
+    s.vragen.map((v, qi) => `"${s.id}-${qi}": [${s.id}] ${v}`)
+  ).join('\n');
+
+  const content = [];
+
+  // Voeg alle afbeelding-docs toe (max 5 voor context window)
+  const imgDocs = docs.filter(d => d.mime?.startsWith('image/'));
+  for (const doc of imgDocs.slice(0, 5)) {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: doc.mime, data: doc.b64.split(',')[1] }
+    });
+  }
+
+  content.push({
+    type: "text",
+    text: `Je bent een Belgische preventieadviseur niveau A. Analyseer het/de geüploade conformiteitsverslag(en)/document(en) voor een arbeidsmiddel.
+
+Beantwoord alle onderstaande vragen op basis van wat je in de documenten ziet/leest.
+- Als iets conform is in het document: "ok"
+- Als iets niet conform is: "nok"  
+- Als actie vereist is: "todo"
+- Als niet van toepassing: "na"
+- Als onbekend/niet vermeld: laat de key weg uit JSON
+
+Geef ALLEEN geldige JSON terug, geen uitleg, geen backticks:
+{
+  "3.1-0": {"value": "ok", "note": "CE-markering aanwezig op typeplaatje (foto p.1)", "wetgeving": "Machinerichtlijn 2006/42/EG Art. 16"},
+  "3.1-1": {"value": "nok", "note": "DoC ontbreekt in technisch dossier", "wetgeving": "Machinerichtlijn 2006/42/EG Bijlage II"},
+  ...
+}
+
+Vragen om te beantwoorden:
+${vragenLijst}`
+  });
+
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 4000,
+      messages: [{ role: "user", content }]
+    })
+  });
+  const d = await r.json();
+  const raw = d.content?.[0]?.text || "{}";
+  try { return JSON.parse(raw.replace(/```json|```/g, "").trim()); }
+  catch { return {}; }
+}
+
+// ─── AI BULK FOTO ANALYSE PER SECTIE ─────────────────────────────────────────
+async function callAIBulkFotoSectie(fotos, sectie, contextDocs=[]) {
+  const content = [];
+
+  // Voeg context-docs toe (vorig verslag als referentie)
+  const ctxImgs = contextDocs.filter(d => d.mime?.startsWith('image/')).slice(0, 2);
+  for (const doc of ctxImgs) {
+    content.push({ type: "image", source: { type: "base64", media_type: doc.mime, data: doc.b64.split(',')[1] } });
+  }
+
+  // Voeg alle foto's toe (max 20, verkleind voor snelheid)
+  for (const foto of fotos.slice(0, 20)) {
+    const b64 = foto.split(',')[1] || foto;
+    const small = await resizeB64(b64, 600, 0.65);
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: small } });
+  }
+
+  const vragenLijst = sectie.vragen.map((v, qi) => `${qi}: ${v}`).join('\n');
+
+  content.push({
+    type: "text",
+    text: `Je bent een Belgische preventieadviseur niveau A. Analyseer de ${fotos.length} foto's van het arbeidsmiddel voor sectie "${sectie.id} – ${sectie.title}".
+
+Beoordeel elke vraag op basis van WAT JE ZIET op de foto's.
+Beschrijf concreet wat je ziet (welke foto, wat is zichtbaar, wat ontbreekt).
+
+Geef ALLEEN geldige JSON terug, geen uitleg, geen backticks:
+{
+  "0": {"value": "ok|nok|todo|na", "note": "concreet wat je ziet op de foto's", "wetgeving": "Codex artikel / EN-norm"},
+  "1": {...}
+}
+
+Vragen voor sectie ${sectie.id}:
+${vragenLijst}`
+  });
+
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      messages: [{ role: "user", content }]
+    })
+  });
+  const d = await r.json();
+  const raw = d.content?.[0]?.text || "{}";
+  try { return JSON.parse(raw.replace(/```json|```/g, "").trim()); }
+  catch { return {}; }
+}
+
 async function resizeB64(b64, MAX, quality=0.6){
   return new Promise(res=>{
     const img=new Image();
@@ -1015,6 +1130,238 @@ function BewerkbareBevinding({f, onUpdate}){
   );
 }
 
+// ─── AUTO-INVULLEN PANEL ──────────────────────────────────────────────────────
+function AutoInvullenPanel({ docs, onAntwoorden }) {
+  const [loading, setLoading] = useState(false);
+  const [voortgang, setVoortgang] = useState("");
+  const [resultaat, setResultaat] = useState(null);
+  const ref = useRef();
+
+  const imgDocs = docs.filter(d => d.mime?.startsWith('image/'));
+  const heeftDocs = imgDocs.length > 0;
+
+  const start = async () => {
+    if (!heeftDocs) return;
+    setLoading(true);
+    setResultaat(null);
+    setVoortgang("📄 Documenten analyseren...");
+    try {
+      const antw = await callAIAutoInvullen(docs);
+      const count = Object.keys(antw).length;
+      setResultaat({ antw, count });
+      setVoortgang(`✅ ${count} vragen automatisch ingevuld`);
+    } catch(e) {
+      setVoortgang("⚠️ Fout bij analyseren. Probeer opnieuw.");
+    }
+    setLoading(false);
+  };
+
+  const toepassen = () => {
+    if (resultaat?.antw) {
+      onAntwoorden(resultaat.antw);
+    }
+  };
+
+  // Bulk foto upload voor auto-invullen
+  const handleFotos = async (e) => {
+    const files = Array.from(e.target.files);
+    setLoading(true);
+    setVoortgang(`📸 ${files.length} foto's verwerken...`);
+    const imgList = await Promise.all(files.map(f => resizeImg(f, 800)));
+    // Maak tijdelijke docs van de foto's
+    const fotoDocs = imgList.map((b64, i) => ({
+      id: Date.now() + i,
+      type: "overig",
+      label: "Geüploade foto",
+      name: files[i].name,
+      size: files[i].size,
+      b64,
+      mime: "image/jpeg",
+    }));
+    const allDocs = [...docs, ...fotoDocs];
+    setVoortgang(`🤖 AI analyseert ${allDocs.length} documenten & foto's...`);
+    try {
+      const antw = await callAIAutoInvullen(allDocs);
+      const count = Object.keys(antw).length;
+      setResultaat({ antw, count });
+      setVoortgang(`✅ ${count} vragen automatisch ingevuld via foto's`);
+    } catch(e) {
+      setVoortgang("⚠️ Fout bij analyseren.");
+    }
+    setLoading(false);
+    e.target.value = "";
+  };
+
+  return (
+    <div style={{background:"#0a1428",border:`2px solid ${C.yellow}`,borderRadius:8,padding:20,marginBottom:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+        <span style={{fontSize:24}}>🤖</span>
+        <div>
+          <div style={{fontSize:13,fontWeight:800,color:C.yellow,letterSpacing:1}}>AUTO-INVULLEN</div>
+          <div style={{fontSize:11,color:C.muted}}>AI leest uw documenten & foto's en vult de checklist automatisch in</div>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+        {/* Via geüploade docs */}
+        <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.text,marginBottom:6}}>📄 Via geüploade documenten</div>
+          <div style={{fontSize:10,color:C.muted,marginBottom:10,lineHeight:1.5}}>
+            {heeftDocs ? `${imgDocs.length} document(en) beschikbaar als afbeelding` : "Upload eerst documenten hierboven (als afbeelding/foto van het verslag)"}
+          </div>
+          <Btn onClick={start} disabled={!heeftDocs||loading} style={{fontSize:10,padding:"7px 14px",width:"100%",justifyContent:"center"}}>
+            {loading ? "⏳ Analyseren..." : "🤖 Analyseer documenten"}
+          </Btn>
+        </div>
+
+        {/* Via nieuwe foto's */}
+        <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:6,padding:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.text,marginBottom:6}}>📸 Via foto's van het toestel</div>
+          <div style={{fontSize:10,color:C.muted,marginBottom:10,lineHeight:1.5}}>
+            Upload 1–20 foto's van het arbeidsmiddel → AI analyseert en vult in
+          </div>
+          <Btn variant="blue" onClick={()=>ref.current.click()} disabled={loading} style={{fontSize:10,padding:"7px 14px",width:"100%",justifyContent:"center"}}>
+            📸 Foto's uploaden & analyseren
+          </Btn>
+          <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleFotos}/>
+        </div>
+      </div>
+
+      {/* Status */}
+      {(loading || voortgang) && (
+        <div style={{background:"#071410",border:"1px solid #1a4030",borderRadius:4,padding:10,marginBottom:10,fontSize:11,color:"#7abfa0",display:"flex",alignItems:"center",gap:8}}>
+          {loading && <span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⟳</span>}
+          {voortgang}
+        </div>
+      )}
+
+      {/* Resultaat preview */}
+      {resultaat && (
+        <div style={{background:"#071a0f",border:"1px solid #1a4030",borderRadius:6,padding:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:10}}>
+            ✅ {resultaat.count} vragen klaar om in te vullen
+          </div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12,maxHeight:100,overflow:"auto"}}>
+            {Object.entries(resultaat.antw).map(([key, val]) => (
+              <span key={key} style={{
+                fontSize:9,fontFamily:"monospace",padding:"2px 6px",borderRadius:3,fontWeight:700,
+                background: val.value==="ok"?"#0a1a0f":val.value==="nok"?"#1a0808":"#1a1400",
+                color: val.value==="ok"?C.green:val.value==="nok"?C.red:"#ffcc00",
+                border: `1px solid ${val.value==="ok"?C.green+"44":val.value==="nok"?C.red+"44":"#ffcc0044"}`
+              }}>{key} {val.value==="ok"?"✓":val.value==="nok"?"✗":"!"}</span>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <Btn onClick={toepassen} style={{fontSize:11,padding:"8px 18px"}}>
+              ✅ Toepassen op checklist
+            </Btn>
+            <Btn variant="ghost" style={{fontSize:11,padding:"8px 14px"}} onClick={()=>setResultaat(null)}>
+              Annuleren
+            </Btn>
+          </div>
+          <div style={{fontSize:10,color:"#445",marginTop:8}}>⚠️ U kunt daarna nog alles handmatig aanpassen in de checklist</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── BULK FOTO SECTIE ANALYSE ─────────────────────────────────────────────────
+function BulkFotoSectie({ sectie, contextDocs, onAntwoorden, bestaandeFotos=[] }) {
+  const [open, setOpen] = useState(false);
+  const [fotos, setFotos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [voortgang, setVoortgang] = useState("");
+  const ref = useRef();
+
+  const handleFotos = async (e) => {
+    const files = Array.from(e.target.files);
+    const imgs = await Promise.all(files.map(f => resizeImg(f, 800)));
+    setFotos(p => [...p, ...imgs]);
+    e.target.value = "";
+  };
+
+  const analyseer = async () => {
+    if (fotos.length === 0) return;
+    setLoading(true);
+    setVoortgang(`🤖 AI analyseert ${fotos.length} foto's voor sectie ${sectie.id}...`);
+    try {
+      const resultaat = await callAIBulkFotoSectie(fotos, sectie, contextDocs);
+      // Converteer naar antwoorden-formaat met foto's
+      const antwoorden = {};
+      for (const [qi, val] of Object.entries(resultaat)) {
+        antwoorden[`${sectie.id}-${qi}`] = {
+          value: val.value,
+          note: val.note || "",
+          wetgeving: val.wetgeving || "",
+          fotos: fotos.slice(0, 3), // Eerste 3 foto's toevoegen als bewijs
+        };
+      }
+      onAntwoorden(antwoorden);
+      setVoortgang(`✅ ${Object.keys(antwoorden).length}/${sectie.vragen.length} vragen ingevuld`);
+      setOpen(false);
+    } catch(e) {
+      setVoortgang("⚠️ Fout bij analyseren. Probeer opnieuw.");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{marginBottom:12}}>
+      <button onClick={()=>setOpen(!open)}
+        style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:"#0d1a28",border:`1px solid ${C.yellow}44`,borderRadius:6,color:C.yellow,fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"sans-serif",width:"100%",justifyContent:"space-between"}}>
+        <span>📸 Bulk foto-analyse voor deze sectie ({sectie.vragen.length} vragen automatisch beantwoorden)</span>
+        <span>{open?"▲":"▼"}</span>
+      </button>
+
+      {open && (
+        <div style={{background:"#0a1020",border:`1px solid ${C.yellow}33`,borderRadius:"0 0 6px 6px",padding:16,marginTop:-1}}>
+          <p style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.6}}>
+            Upload foto's van het arbeidsmiddel → AI beantwoordt alle {sectie.vragen.length} vragen van sectie {sectie.id} automatisch.<br/>
+            De foto's worden ook toegevoegd als bewijs in het verslag.
+          </p>
+
+          {/* Upload knop */}
+          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+            <Btn variant="blue" onClick={()=>ref.current.click()} disabled={loading} style={{fontSize:10}}>
+              📷 Foto's toevoegen ({fotos.length})
+            </Btn>
+            <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}} onChange={handleFotos}/>
+            {fotos.length > 0 && (
+              <Btn onClick={analyseer} disabled={loading} style={{fontSize:10}}>
+                {loading ? "⏳ Analyseren..." : `🤖 Analyseer ${fotos.length} foto's`}
+              </Btn>
+            )}
+            {fotos.length > 0 && (
+              <Btn variant="ghost" onClick={()=>setFotos([])} style={{fontSize:10}}>🗑️ Wis</Btn>
+            )}
+          </div>
+
+          {/* Foto preview grid */}
+          {fotos.length > 0 && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>
+              {fotos.map((src, i) => (
+                <div key={i} style={{position:"relative"}}>
+                  <img src={src} style={{width:64,height:64,objectFit:"cover",borderRadius:4,border:`1px solid ${C.border}`,display:"block"}} alt=""/>
+                  <button onClick={()=>setFotos(p=>p.filter((_,j)=>j!==i))}
+                    style={{position:"absolute",top:-4,right:-4,background:C.red,color:"#fff",border:"none",borderRadius:"50%",width:16,height:16,fontSize:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800}}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Status */}
+          {voortgang && (
+            <div style={{background:"#071410",border:"1px solid #1a4030",borderRadius:4,padding:8,fontSize:11,color:"#7abfa0"}}>
+              {loading && "⟳ "}{voortgang}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── STORAGE HELPERS ──────────────────────────────────────────────────────────
 const STORAGE_KEY = "machinecheck_toestellen";
 
@@ -1546,6 +1893,7 @@ export default function App(){
   const [video,setVideo]=useState(null);
   const [videoRes,setVideoRes]=useState("");
   const [videoLoad,setVideoLoad]=useState(false);
+  const [autoIngevuld,setAutoIngevuld]=useState(0);
   const videoRef=useRef();
 
   const setAntw=(key,val)=>setAntwoorden(p=>({...p,[key]:val}));
@@ -1556,7 +1904,19 @@ export default function App(){
     setModus(null);
     setMachine({naam:"",locatie:"",serienr:"",bouwjaar:"",operator:"",categorie:""});
     setAntwoorden({});setActiveSec(0);setDocs([]);setSchetsen([]);
-    setVideo(null);setVideoRes("");
+    setVideo(null);setVideoRes("");setAutoIngevuld(0);
+  };
+
+  const verwerkAutoAntwoorden=(nieuweAntw)=>{
+    setAntwoorden(prev=>{
+      const merged={...prev};
+      for(const [key,val] of Object.entries(nieuweAntw)){
+        merged[key]={...(prev[key]||{}), ...val};
+      }
+      return merged;
+    });
+    setAutoIngevuld(Object.keys(nieuweAntw).length);
+    setTimeout(()=>{setActiveSec(0);setStap("checklist");},1200);
   };
 
   const slaOpInOverzicht=async(antwoordenFinaal)=>{
@@ -1619,6 +1979,18 @@ export default function App(){
           <p style={{fontSize:12,color:"#667",marginBottom:12}}>CE, DoC, handleidingen, risicoanalyses, VIK, WIK, eerdere verslagen</p>
           <DocumentUploader docs={docs} onAdd={d=>setDocs(p=>[...p,d])} onRemove={i=>{const nd=[...docs];nd.splice(i,1);setDocs(nd);}} onAnalyze={(i,t)=>{const nd=[...docs];nd[i]={...nd[i],aiAnalysis:t};setDocs(nd);}}/>
         </Card>
+
+        {/* AUTO-INVULLEN PANEL */}
+        <AutoInvullenPanel
+          docs={docs}
+          onAntwoorden={verwerkAutoAntwoorden}
+        />
+
+        {autoIngevuld>0&&(
+          <div style={{background:"#071a0f",border:"1px solid #44cc8844",borderRadius:6,padding:12,marginBottom:14,fontSize:12,color:C.green,fontWeight:700}}>
+            ✅ {autoIngevuld} vragen automatisch ingevuld — checklist wordt geopend...
+          </div>
+        )}
         <Card>
           <div style={{fontSize:12,fontWeight:700,color:C.yellow,letterSpacing:2,textTransform:"uppercase",marginBottom:10}}>Videoanalyse (optioneel)</div>
           <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
@@ -1672,6 +2044,22 @@ export default function App(){
             </div>
             <span style={{fontSize:10,color:"#445",fontFamily:"monospace"}}>{secBeantwoord}/{sec.vragen.length}</span>
           </div>
+
+          {/* BULK FOTO ANALYSE PER SECTIE */}
+          <BulkFotoSectie
+            sectie={sec}
+            contextDocs={docs}
+            bestaandeFotos={[]}
+            onAntwoorden={(nieuweAntw)=>{
+              setAntwoorden(prev=>{
+                const merged={...prev};
+                for(const [key,val] of Object.entries(nieuweAntw)){
+                  merged[key]={...(prev[key]||{}), ...val};
+                }
+                return merged;
+              });
+            }}
+          />
           {sec.vragen.map((v,qi)=>(
             <VraagRow key={`${sec.id}-${qi}`} vraag={v} sectieId={sec.id} antwoord={antwoorden[`${sec.id}-${qi}`]||{}} onUpdate={val=>setAntw(`${sec.id}-${qi}`,val)}/>
           ))}
