@@ -192,6 +192,21 @@ export default function RondgangModule({onTerug}){
   const [customRef,setCustomRef]=useState('');
   const [activeInst,setActiveInst]=useState(null);
   const [openSec,setOpenSec]=useState(null);
+  const [saved,setSaved]=useState(false);
+
+  // Export single installatie als Word
+  const exportSingleInst=(inst)=>{
+    if(!inst)return;
+    const singleData={[inst.id]:installaties[inst.id]};
+    exportToWord({datum:datumNu(),inspecteur,site,installaties:singleData});
+  };
+
+  // Opslaan bevestiging (localStorage wordt al auto-opgeslagen via useEffect)
+  const bevestigOpslaan=()=>{
+    localStorage.setItem('rondgang_v3',JSON.stringify({installaties,inspecteur,site}));
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2000);
+  };
 
   useEffect(()=>{
     const s=localStorage.getItem('rondgang_v3');
@@ -363,6 +378,21 @@ export default function RondgangModule({onTerug}){
                   </div>
                 );
               })}
+            </div>
+
+            {/* OPSLAAN & EXPORT KNOPPEN */}
+            <div style={{padding:'12px 16px',borderTop:`1px solid ${C.border}`,display:'flex',flexDirection:'column',gap:8}}>
+              {saved&&<div style={{background:'#1a3a1a',border:`1px solid ${C.green}`,borderRadius:6,padding:'8px 12px',fontSize:12,color:C.green,textAlign:'center',fontWeight:700}}>✅ Opgeslagen! (incl. alle foto's)</div>}
+              <div style={{display:'flex',gap:8}}>
+                <button onClick={bevestigOpslaan}
+                  style={{...sBtn('yellow'),flex:1,padding:'12px',fontSize:13}}>💾 Opslaan</button>
+                <button onClick={()=>exportSingleInst(activeInst)}
+                  disabled={!telIngevuld(activeInst?.id)}
+                  style={{...sBtn('green'),flex:1,padding:'12px',fontSize:13,opacity:telIngevuld(activeInst?.id)?1:.4}}>📄 Word export</button>
+              </div>
+              <div style={{fontSize:10,color:C.muted,textAlign:'center'}}>
+                {telIngevuld(activeInst?.id)}/19 secties ingevuld · {Object.values(curInst?.secties||{}).reduce((t,s)=>t+(s.fotos?.length||0),0)} foto's
+              </div>
             </div>
           </div>
         )}
