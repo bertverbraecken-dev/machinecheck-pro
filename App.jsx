@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 
 // ─── 19 SECTIES RICHTLIJN WERKUITRUSTING ─────────────────────────────────────
 const SECTIES=[
@@ -104,14 +104,40 @@ const pad2=n=>String(n).padStart(2,'0');
 const datumNu=()=>{const d=new Date();return`${pad2(d.getDate())}/${pad2(d.getMonth()+1)}/${d.getFullYear()}`;};
 const KleurDot=({kleur})=>kleur&&kleur!=='#fff'?<span style={{display:'inline-block',width:10,height:10,borderRadius:2,background:kleur,border:'1px solid rgba(0,0,0,0.15)',flexShrink:0}}/>:null;
 
+// ─── FOTO RESIZE (GSM foto's zijn 3-5MB → max 1200px breed, JPEG 0.8) ───────
+function resizeImage(file, maxW=1200){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onerror=()=>reject(new Error('Kan foto niet lezen'));
+    reader.onload=(e)=>{
+      const img=new Image();
+      img.onerror=()=>reject(new Error('Ongeldig afbeeldingsformaat'));
+      img.onload=()=>{
+        let w=img.width, h=img.height;
+        if(w>maxW){h=Math.round(h*(maxW/w));w=maxW;}
+        const canvas=document.createElement('canvas');
+        canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');
+        ctx.drawImage(img,0,0,w,h);
+        const dataUrl=canvas.toDataURL('image/jpeg',0.8);
+        resolve(dataUrl);
+      };
+      img.src=e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ─── WORD EXPORT (.doc HTML) — grote foto's per sectie ───────────────────────
 function exportToWord(data){
   const {datum,inspecteur,site,installaties}=data;
   const filled=Object.values(installaties).filter(inst=>
     Object.values(inst.secties||{}).some(s=>s.notitie||s.fotos?.length>0)
   );
+  if(filled.length===0){alert('Geen ingevulde installaties om te exporteren.');return;}
+
   let instHtml='';
-  filled.forEach(inst=>{
+  filled.forEach((inst,idx)=>{
     const refTxt=inst.ref&&inst.ref!=='—'?`[${inst.ref}] `:'';
     let secRows='';
     SECTIES.forEach(sec=>{
@@ -125,7 +151,7 @@ function exportToWord(data){
           ${d.notitie?`<div style="white-space:pre-wrap">${d.notitie}</div>`:'<span style="color:#999">—</span>'}
         </td>
       </tr>`;
-      // Foto-rij(en): elke foto krijgt een eigen volle-breedte rij → groot en duidelijk in Word
+      // Elke foto = eigen volle-breedte rij → groot en duidelijk in Word
       (d.fotos||[]).forEach((f,fi)=>{
         secRows+=`<tr>
           <td colspan="3" style="border:1px solid #bbb;padding:10px;text-align:center">
@@ -135,7 +161,7 @@ function exportToWord(data){
         </tr>`;
       });
     });
-    instHtml+=`<div style="page-break-before:always;margin-bottom:24px">
+    instHtml+=`<div style="${idx>0?'page-break-before:always;':''}margin-bottom:24px">
       <table style="width:100%;border-collapse:collapse">
         <tr><td colspan="3" style="background:#1F3864;color:white;padding:10px 14px;font-size:13pt;font-weight:bold;border:1px solid #1F3864">
           ${refTxt}${inst.naam}
@@ -153,7 +179,7 @@ function exportToWord(data){
   const html=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
 <head><meta charset="utf-8"/><title>Rondgang ${datum}</title>
 <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
-<style>@page{size:A4;margin:1.5cm;}body{font-family:Calibri,Arial,sans-serif;color:#222;font-size:10pt;}table{border-collapse:collapse;width:100%;}img{max-width:500px;}</style>
+<style>@page{size:A4 landscape;margin:1.5cm;}body{font-family:Calibri,Arial,sans-serif;color:#222;font-size:10pt;}table{border-collapse:collapse;width:100%;}img{max-width:500px;}</style>
 </head><body>
 <div style="text-align:center;margin-bottom:10px">
   <div style="background:#1F3864;color:white;padding:14px;font-size:16pt;font-weight:bold;letter-spacing:1px">RONDGANG — VEILIGHEIDSINSPECTIE</div>
@@ -165,10 +191,9 @@ function exportToWord(data){
   <td style="border:1px solid #bbb;padding:5px 8px;background:#f5f5f5;font-weight:bold">Inspecteur</td><td style="border:1px solid #bbb;padding:5px 8px" colspan="3">${inspecteur}</td>
 </tr><tr>
   <td style="border:1px solid #bbb;padding:5px 8px;background:#f5f5f5;font-weight:bold">Installaties</td><td style="border:1px solid #bbb;padding:5px 8px">${filled.length}</td>
-  <td style="border:1px solid #bbb;padding:5px 8px;background:#f5f5f5;font-weight:bold">Datum export</td><td style="border:1px solid #bbb;padding:5px 8px">${datum}</td>
+  <td style="border:1px solid #bbb;padding:5px 8px;background:#f5f5f5;font-weight:bold">Gegenereerd</td><td style="border:1px solid #bbb;padding:5px 8px">MachineCheck Pro — Rondgang</td>
 </tr></table>
 ${instHtml}
-<div style="margin-top:16px;font-size:8pt;color:#999;text-align:center">MachineCheck Pro — Rondgang Module</div>
 </body></html>`;
 
   const blob=new Blob(['\ufeff',html],{type:'application/msword'});
@@ -176,8 +201,22 @@ ${instHtml}
   const a=document.createElement('a');
   a.href=url;a.download=`Rondgang_${datum.replace(/\//g,'-')}.doc`;
   document.body.appendChild(a);a.click();document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(()=>URL.revokeObjectURL(url),5000);
 }
+
+// ─── INDEXEDDB OPSLAG (foto's zijn te groot voor localStorage) ────────────────
+const DB_NAME='rondgang_db';const DB_STORE='data';const DB_VER=1;
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(DB_NAME,DB_VER);
+    req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(DB_STORE))db.createObjectStore(DB_STORE);};
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function dbSave(key,val){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(DB_STORE,'readwrite');tx.objectStore(DB_STORE).put(val,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);});}
+async function dbLoad(key){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(DB_STORE,'readonly');const r=tx.objectStore(DB_STORE).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function dbClear(){const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction(DB_STORE,'readwrite');tx.objectStore(DB_STORE).clear();tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error);});}
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 export default function RondgangModule({onTerug}){
@@ -190,32 +229,139 @@ export default function RondgangModule({onTerug}){
   const [showCustom,setShowCustom]=useState(false);
   const [customNaam,setCustomNaam]=useState('');
   const [customRef,setCustomRef]=useState('');
-  const [activeInst,setActiveInst]=useState(null);
+  const [activeInstId,setActiveInstId]=useState(null);
+  const [activeInstMeta,setActiveInstMeta]=useState(null); // {naam,ref,kleur}
   const [openSec,setOpenSec]=useState(null);
   const [saved,setSaved]=useState(false);
+  const [fotoBezig,setFotoBezig]=useState(false);
+  const fotoInputRefs=useRef({});
 
-  // Export single installatie als Word
-  const exportSingleInst=(inst)=>{
-    if(!inst)return;
-    const singleData={[inst.id]:installaties[inst.id]};
-    exportToWord({datum:datumNu(),inspecteur,site,installaties:singleData});
-  };
-
-  // Opslaan bevestiging (localStorage wordt al auto-opgeslagen via useEffect)
-  const bevestigOpslaan=()=>{
-    localStorage.setItem('rondgang_v3',JSON.stringify({installaties,inspecteur,site}));
-    setSaved(true);
-    setTimeout(()=>setSaved(false),2000);
-  };
-
+  // ─── LADEN & OPSLAAN (IndexedDB) ──────────────────────────────────────
   useEffect(()=>{
-    const s=localStorage.getItem('rondgang_v3');
-    if(s){try{const d=JSON.parse(s);if(Object.keys(d.installaties||{}).length){setInstallaties(d.installaties);setInspecteur(d.inspecteur||'');setSite(d.site||'');setStap('rondgang');}}catch(e){}}
+    (async()=>{
+      try{
+        const d=await dbLoad('rondgang_state');
+        if(d&&Object.keys(d.installaties||{}).length){
+          setInstallaties(d.installaties);
+          setInspecteur(d.inspecteur||'Bert Verbraecken');
+          setSite(d.site||'');
+          setStap('rondgang');
+        }
+      }catch(e){console.warn('DB load error:',e);}
+    })();
   },[]);
+
+  const opslaanNaarDB=async(inst)=>{
+    const data=inst||installaties;
+    try{await dbSave('rondgang_state',{installaties:data,inspecteur,site});}
+    catch(e){console.warn('DB save error:',e);}
+  };
+
+  // Autosave elke 10 seconden als er data is
   useEffect(()=>{
-    if(Object.keys(installaties).length>0)localStorage.setItem('rondgang_v3',JSON.stringify({installaties,inspecteur,site}));
+    if(Object.keys(installaties).length===0)return;
+    const t=setTimeout(()=>opslaanNaarDB(),10000);
+    return()=>clearTimeout(t);
   },[installaties,inspecteur,site]);
 
+  // ─── ACTIEVE INSTALLATIE helpers ──────────────────────────────────────
+  const selecteerInst=(inst)=>{
+    setActiveInstId(inst.id);
+    setActiveInstMeta({naam:inst.naam,ref:inst.ref,kleur:inst.kleur});
+    setOpenSec(null);
+  };
+
+  const curInst=activeInstId?installaties[activeInstId]:null;
+
+  const telIngevuld=(instId)=>{
+    const inst=installaties[instId];if(!inst)return 0;
+    return Object.values(inst.secties||{}).filter(s=>s.notitie||s.fotos?.length>0).length;
+  };
+
+  const telFotos=(instId)=>{
+    const inst=installaties[instId];if(!inst)return 0;
+    return Object.values(inst.secties||{}).reduce((t,s)=>t+(s.fotos?.length||0),0);
+  };
+
+  // ─── SECTIE UPDATE (geen stale closure — leest activeInstId via ref pattern) ─
+  const updateSec=(secId,field,value)=>{
+    setInstallaties(prev=>{
+      // Gebruik activeInstMeta als fallback voor nieuwe installaties
+      const instId=activeInstId;
+      if(!instId)return prev;
+      const meta=activeInstMeta||{naam:'',ref:'',kleur:'#fff'};
+      const inst=prev[instId]||{naam:meta.naam,ref:meta.ref,kleur:meta.kleur,secties:{}};
+      const sec=inst.secties[secId]||{notitie:'',fotos:[]};
+      return{...prev,[instId]:{...inst,secties:{...inst.secties,[secId]:{...sec,[field]:value}}}};
+    });
+  };
+
+  // ─── FOTO TOEVOEGEN (resize + opslaan) ─────────────────────────────────
+  const verwerkFotos=async(secId,files)=>{
+    if(!activeInstId||!files?.length)return;
+    setFotoBezig(true);
+    try{
+      const resized=[];
+      for(const file of files){
+        try{
+          const dataUrl=await resizeImage(file,1200);
+          resized.push(dataUrl);
+        }catch(err){
+          console.warn('Foto resize error:',err);
+          // Fallback: probeer zonder resize
+          const raw=await new Promise((res,rej)=>{
+            const r=new FileReader();r.onload=e=>res(e.target.result);r.onerror=()=>rej(new Error('Leesfout'));r.readAsDataURL(file);
+          });
+          resized.push(raw);
+        }
+      }
+      // Voeg toe aan state
+      setInstallaties(prev=>{
+        const instId=activeInstId;
+        const meta=activeInstMeta||{naam:'',ref:'',kleur:'#fff'};
+        const inst=prev[instId]||{naam:meta.naam,ref:meta.ref,kleur:meta.kleur,secties:{}};
+        const sec=inst.secties[secId]||{notitie:'',fotos:[]};
+        return{...prev,[instId]:{...inst,secties:{...inst.secties,[secId]:{...sec,fotos:[...sec.fotos,...resized]}}}};
+      });
+    }catch(err){
+      alert('Fout bij verwerken foto: '+err.message);
+    }finally{
+      setFotoBezig(false);
+    }
+  };
+
+  const removeFoto=(secId,idx)=>{
+    setInstallaties(prev=>{
+      const instId=activeInstId;
+      const inst=prev[instId];if(!inst)return prev;
+      const sec=inst.secties[secId];if(!sec)return prev;
+      return{...prev,[instId]:{...inst,secties:{...inst.secties,[secId]:{...sec,fotos:sec.fotos.filter((_,i)=>i!==idx)}}}};
+    });
+  };
+
+  // ─── EXPORT & OPSLAAN ─────────────────────────────────────────────────
+  const exportSingle=()=>{
+    if(!activeInstId||!installaties[activeInstId])return;
+    exportToWord({datum:datumNu(),inspecteur,site,installaties:{[activeInstId]:installaties[activeInstId]}});
+  };
+
+  const exportAlles=()=>{
+    exportToWord({datum:datumNu(),inspecteur,site,installaties});
+  };
+
+  const bevestigOpslaan=async()=>{
+    await opslaanNaarDB();
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2500);
+  };
+
+  const startNieuw=async()=>{
+    if(!confirm('Alle data wissen? Dit kan niet ongedaan worden.'))return;
+    await dbClear();
+    setInstallaties({});setStap('start');setActiveInstId(null);setActiveInstMeta(null);
+  };
+
+  const totaal=Object.keys(installaties).filter(k=>telIngevuld(k)>0).length;
   const groepen=['Alle',...new Set(ARGEX.map(i=>i.groep))];
   const gefilterd=ARGEX.filter(i=>{
     if(groepFilter!=='Alle'&&i.groep!==groepFilter)return false;
@@ -223,52 +369,14 @@ export default function RondgangModule({onTerug}){
     return true;
   });
 
-  const telIngevuld=instId=>{
-    const inst=installaties[instId];if(!inst)return 0;
-    return Object.values(inst.secties||{}).filter(s=>s.notitie||s.fotos?.length>0).length;
-  };
-
-  const updateSec=(secId,field,value)=>{
-    if(!activeInst)return;
-    setInstallaties(prev=>{
-      const inst=prev[activeInst.id]||{naam:activeInst.naam,ref:activeInst.ref,kleur:activeInst.kleur,secties:{}};
-      const sec=inst.secties[secId]||{notitie:'',fotos:[]};
-      return{...prev,[activeInst.id]:{...inst,secties:{...inst.secties,[secId]:{...sec,[field]:value}}}};
-    });
-  };
-
-  const addFoto=(secId,base64)=>{
-    if(!activeInst)return;
-    setInstallaties(prev=>{
-      const inst=prev[activeInst.id]||{naam:activeInst.naam,ref:activeInst.ref,kleur:activeInst.kleur,secties:{}};
-      const sec=inst.secties[secId]||{notitie:'',fotos:[]};
-      return{...prev,[activeInst.id]:{...inst,secties:{...inst.secties,[secId]:{...sec,fotos:[...sec.fotos,base64]}}}};
-    });
-  };
-
-  const removeFoto=(secId,idx)=>{
-    if(!activeInst)return;
-    setInstallaties(prev=>{
-      const inst=prev[activeInst.id];if(!inst)return prev;
-      const sec=inst.secties[secId];if(!sec)return prev;
-      return{...prev,[activeInst.id]:{...inst,secties:{...inst.secties,[secId]:{...sec,fotos:sec.fotos.filter((_,i)=>i!==idx)}}}};
-    });
-  };
-
-  const handleFoto=useCallback((secId,e)=>{
-    Array.from(e.target.files).forEach(file=>{const r=new FileReader();r.onload=ev=>addFoto(secId,ev.target.result);r.readAsDataURL(file);});
-    e.target.value='';
-  },[activeInst]);
-
-  const startNieuw=()=>{localStorage.removeItem('rondgang_v3');setInstallaties({});setStap('start');setActiveInst(null);};
-  const totaal=Object.keys(installaties).filter(k=>telIngevuld(k)>0).length;
-
+  // ─── STYLES ────────────────────────────────────────────────────────────
   const sBtn=(v='default')=>({
     padding:'10px 18px',border:'none',borderRadius:6,cursor:'pointer',fontWeight:700,fontSize:13,fontFamily:'sans-serif',
     ...(v==='yellow'?{background:C.yellow,color:'#000'}:v==='green'?{background:C.green,color:'#fff'}:v==='red'?{background:C.red,color:'#fff'}:v==='blue'?{background:C.blue,color:'#fff'}:v==='ghost'?{background:'transparent',border:`1px solid ${C.border}`,color:C.muted}:{background:C.card,border:`1px solid ${C.border}`,color:C.text}),
   });
   const sInput={background:'#1a1c14',border:`1px solid ${C.border}`,borderRadius:6,padding:'10px 12px',color:C.text,fontSize:14,fontFamily:'sans-serif',width:'100%',boxSizing:'border-box',outline:'none'};
 
+  // ─── STARTSCHERM ───────────────────────────────────────────────────────
   if(stap==='start')return(
     <div style={{background:C.bg,minHeight:'100vh',fontFamily:'sans-serif',color:C.text}}>
       <div style={{background:'#14160f',borderBottom:`1px solid ${C.border}`,padding:'14px 18px',display:'flex',alignItems:'center',gap:12}}>
@@ -291,7 +399,7 @@ export default function RondgangModule({onTerug}){
         <button onClick={()=>setStap('rondgang')} style={{...sBtn('yellow'),width:'100%',padding:'14px',fontSize:16}}>🚶 Start Rondgang</button>
         {totaal>0&&(
           <div style={{marginTop:16,padding:12,background:'#1a1c0e',border:`1px solid ${C.yellow}33`,borderRadius:6,fontSize:12,color:C.yellow}}>
-            ⚠️ Lopende rondgang: {totaal} installatie(s)
+            ⚠️ Lopende rondgang: {totaal} installatie(s) opgeslagen
             <button onClick={()=>setStap('rondgang')} style={{...sBtn('yellow'),marginTop:8,width:'100%',padding:'8px'}}>Hervat</button>
           </div>
         )}
@@ -299,45 +407,58 @@ export default function RondgangModule({onTerug}){
     </div>
   );
 
-  const curInst=activeInst?installaties[activeInst.id]:null;
-
+  // ─── RONDGANG ACTIEF ───────────────────────────────────────────────────
   return(
     <div style={{background:C.bg,minHeight:'100vh',fontFamily:'sans-serif',color:C.text}}>
+      {/* TOPBAR */}
       <div style={{background:'#14160f',borderBottom:`1px solid ${C.border}`,padding:'10px 14px',display:'flex',alignItems:'center',gap:10,position:'sticky',top:0,zIndex:100}}>
         <button onClick={onTerug} style={{...sBtn('ghost'),padding:'6px 10px',fontSize:11}}>← Menu</button>
         <div style={{fontSize:14,fontWeight:800}}>🚶 Rondgang</div>
         <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
           {totaal>0&&<div style={{background:C.yellow,color:'#000',borderRadius:12,padding:'3px 10px',fontSize:11,fontWeight:800}}>{totaal}</div>}
-          <button onClick={()=>exportToWord({datum:datumNu(),inspecteur,site,installaties})}
-            disabled={!totaal} style={{...sBtn('green'),padding:'6px 12px',fontSize:11,opacity:totaal?1:.4}}>📄 Word</button>
+          <button onClick={exportAlles} disabled={!totaal}
+            style={{...sBtn('green'),padding:'6px 12px',fontSize:11,opacity:totaal?1:.4}}>📄 Word</button>
           <button onClick={startNieuw} style={{...sBtn('ghost'),padding:'6px 10px',fontSize:11,color:C.red}}>🗑️</button>
         </div>
       </div>
 
       <div style={{maxWidth:640,margin:'0 auto',padding:'14px 12px'}}>
 
-        {activeInst&&(
+        {/* ── ACTIEVE INSTALLATIE ── */}
+        {activeInstId&&(
           <div style={{background:'#1a1c0e',border:`2px solid ${C.yellow}`,borderRadius:10,marginBottom:16,overflow:'hidden'}}>
+            {/* Header */}
             <div style={{padding:'12px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
-                <KleurDot kleur={activeInst.kleur}/>
+                <KleurDot kleur={activeInstMeta?.kleur}/>
                 <div>
                   <div style={{fontSize:10,color:C.yellow,fontWeight:700,letterSpacing:1}}>ACTIEVE INSTALLATIE</div>
                   <div style={{fontSize:14,fontWeight:800,color:'#fff',marginTop:2}}>
-                    {activeInst.ref&&activeInst.ref!=='—'?`[${activeInst.ref}] `:''}{activeInst.naam}
+                    {activeInstMeta?.ref&&activeInstMeta.ref!=='—'?`[${activeInstMeta.ref}] `:''}{activeInstMeta?.naam}
                   </div>
                 </div>
               </div>
-              <button onClick={()=>{setActiveInst(null);setOpenSec(null);}} style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:18}}>✕</button>
+              <button onClick={()=>{setActiveInstId(null);setActiveInstMeta(null);setOpenSec(null);}}
+                style={{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:18}}>✕</button>
             </div>
 
+            {/* Loading indicator */}
+            {fotoBezig&&(
+              <div style={{padding:'8px 16px',background:'#1a2a1a',borderTop:`1px solid ${C.green}`,fontSize:12,color:C.green,textAlign:'center'}}>
+                ⏳ Foto's worden verwerkt...
+              </div>
+            )}
+
+            {/* 19 SECTIES */}
             <div style={{borderTop:`1px solid ${C.border}`}}>
               {SECTIES.map(sec=>{
                 const sd=curInst?.secties?.[sec.id]||{notitie:'',fotos:[]};
                 const isOpen=openSec===sec.id;
                 const heeft=sd.notitie||sd.fotos?.length>0;
+                const inputKey=`${activeInstId}_${sec.id}`;
                 return(
                   <div key={sec.id} style={{borderBottom:`1px solid ${C.border}`}}>
+                    {/* SECTIE HEADER */}
                     <div onClick={()=>setOpenSec(isOpen?null:sec.id)}
                       style={{padding:'10px 16px',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:isOpen?'#161a0d':'transparent'}}>
                       <div style={{fontSize:12,fontWeight:800,color:C.yellow,minWidth:32}}>{sec.id}</div>
@@ -349,29 +470,52 @@ export default function RondgangModule({onTerug}){
                       <span style={{fontSize:10,color:C.muted}}>{isOpen?'▲':'▼'}</span>
                     </div>
 
+                    {/* SECTIE INHOUD */}
                     {isOpen&&(
                       <div style={{padding:'10px 16px',background:'#12140e'}}>
                         <textarea value={sd.notitie||''} onChange={e=>updateSec(sec.id,'notitie',e.target.value)}
                           placeholder={`Opmerking bij ${sec.id} ${sec.titel}...`}
                           style={{...sInput,minHeight:60,resize:'vertical',marginBottom:8,fontSize:13}}/>
 
+                        {/* FOTO THUMBNAILS */}
                         {sd.fotos?.length>0&&(
                           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
                             {sd.fotos.map((f,i)=>(
                               <div key={i} style={{position:'relative'}}>
                                 <img src={f} style={{width:90,height:90,objectFit:'cover',borderRadius:6,border:`1px solid ${C.border}`}}/>
-                                <button onClick={()=>removeFoto(sec.id,i)}
-                                  style={{position:'absolute',top:-6,right:-6,width:20,height:20,borderRadius:10,background:C.red,color:'#fff',border:'none',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center'}}>✕</button>
+                                <button onClick={(e)=>{e.stopPropagation();removeFoto(sec.id,i);}}
+                                  style={{position:'absolute',top:-6,right:-6,width:22,height:22,borderRadius:11,background:C.red,color:'#fff',border:'none',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center'}}>✕</button>
                               </div>
                             ))}
                           </div>
                         )}
 
+                        {/* FOTO KNOPPEN — echte <input> elementen, niet dynamisch aangemaakt */}
                         <div style={{display:'flex',gap:8}}>
-                          <button onClick={()=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.capture='environment';i.multiple=true;i.onchange=e=>handleFoto(sec.id,e);i.click();}}
-                            style={{...sBtn('blue'),flex:1,fontSize:12,padding:'8px 12px'}}>📷 Foto</button>
-                          <button onClick={()=>{const i=document.createElement('input');i.type='file';i.accept='image/*';i.multiple=true;i.onchange=e=>handleFoto(sec.id,e);i.click();}}
-                            style={{...sBtn(),flex:1,fontSize:12,padding:'8px 12px'}}>🖼️ Galerij</button>
+                          <div style={{flex:1,position:'relative'}}>
+                            <input
+                              ref={el=>{fotoInputRefs.current[inputKey+'_cam']=el;}}
+                              type="file" accept="image/*" capture="environment" multiple
+                              onChange={e=>{
+                                if(e.target.files?.length)verwerkFotos(sec.id,Array.from(e.target.files));
+                                e.target.value='';
+                              }}
+                              style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',opacity:0,cursor:'pointer',zIndex:2}}
+                            />
+                            <div style={{...sBtn('blue'),width:'100%',textAlign:'center',padding:'10px 12px',fontSize:13,boxSizing:'border-box'}}>📷 Camera</div>
+                          </div>
+                          <div style={{flex:1,position:'relative'}}>
+                            <input
+                              ref={el=>{fotoInputRefs.current[inputKey+'_gal']=el;}}
+                              type="file" accept="image/*" multiple
+                              onChange={e=>{
+                                if(e.target.files?.length)verwerkFotos(sec.id,Array.from(e.target.files));
+                                e.target.value='';
+                              }}
+                              style={{position:'absolute',top:0,left:0,width:'100%',height:'100%',opacity:0,cursor:'pointer',zIndex:2}}
+                            />
+                            <div style={{...sBtn(),width:'100%',textAlign:'center',padding:'10px 12px',fontSize:13,boxSizing:'border-box'}}>🖼️ Galerij</div>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -380,58 +524,74 @@ export default function RondgangModule({onTerug}){
               })}
             </div>
 
-            {/* OPSLAAN & EXPORT KNOPPEN */}
-            <div style={{padding:'12px 16px',borderTop:`1px solid ${C.border}`,display:'flex',flexDirection:'column',gap:8}}>
-              {saved&&<div style={{background:'#1a3a1a',border:`1px solid ${C.green}`,borderRadius:6,padding:'8px 12px',fontSize:12,color:C.green,textAlign:'center',fontWeight:700}}>✅ Opgeslagen! (incl. alle foto's)</div>}
+            {/* OPSLAAN & EXPORT per installatie */}
+            <div style={{padding:'12px 16px',borderTop:`2px solid ${C.border}`,background:'#10120c'}}>
+              {saved&&<div style={{background:'#1a3a1a',border:`1px solid ${C.green}`,borderRadius:6,padding:'8px 12px',fontSize:12,color:C.green,textAlign:'center',fontWeight:700,marginBottom:8}}>
+                ✅ Opgeslagen! ({telFotos(activeInstId)} foto's veiliggesteld)
+              </div>}
               <div style={{display:'flex',gap:8}}>
                 <button onClick={bevestigOpslaan}
-                  style={{...sBtn('yellow'),flex:1,padding:'12px',fontSize:13}}>💾 Opslaan</button>
-                <button onClick={()=>exportSingleInst(activeInst)}
-                  disabled={!telIngevuld(activeInst?.id)}
-                  style={{...sBtn('green'),flex:1,padding:'12px',fontSize:13,opacity:telIngevuld(activeInst?.id)?1:.4}}>📄 Word export</button>
+                  style={{...sBtn('yellow'),flex:1,padding:'12px',fontSize:14}}>💾 Opslaan</button>
+                <button onClick={exportSingle}
+                  disabled={!telIngevuld(activeInstId)}
+                  style={{...sBtn('green'),flex:1,padding:'12px',fontSize:14,opacity:telIngevuld(activeInstId)?1:.4}}>📄 Word</button>
               </div>
-              <div style={{fontSize:10,color:C.muted,textAlign:'center'}}>
-                {telIngevuld(activeInst?.id)}/19 secties ingevuld · {Object.values(curInst?.secties||{}).reduce((t,s)=>t+(s.fotos?.length||0),0)} foto's
+              <div style={{fontSize:10,color:C.muted,textAlign:'center',marginTop:6}}>
+                {telIngevuld(activeInstId)}/19 secties · {telFotos(activeInstId)} foto's
               </div>
             </div>
           </div>
         )}
 
+        {/* ZOEK & FILTER */}
         <div style={{marginBottom:10}}>
           <input value={zoek} onChange={e=>setZoek(e.target.value)} placeholder="🔍 Zoek installatie..." style={{...sInput,marginBottom:8}}/>
           <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-            {groepen.map(g=><button key={g} onClick={()=>setGroepFilter(g)} style={{padding:'5px 10px',borderRadius:14,fontSize:10,fontWeight:700,cursor:'pointer',border:groepFilter===g?`2px solid ${C.yellow}`:`1px solid ${C.border}`,background:groepFilter===g?'#1a1c0e':C.card,color:groepFilter===g?C.yellow:C.muted}}>{g}</button>)}
+            {groepen.map(g=><button key={g} onClick={()=>setGroepFilter(g)}
+              style={{padding:'5px 10px',borderRadius:14,fontSize:10,fontWeight:700,cursor:'pointer',
+                border:groepFilter===g?`2px solid ${C.yellow}`:`1px solid ${C.border}`,
+                background:groepFilter===g?'#1a1c0e':C.card,color:groepFilter===g?C.yellow:C.muted}}>{g}</button>)}
           </div>
         </div>
 
+        {/* HANDMATIG TOEVOEGEN */}
         <div style={{marginBottom:12}}>
           {!showCustom?<button onClick={()=>setShowCustom(true)} style={{...sBtn('ghost'),width:'100%',fontSize:11}}>+ Niet in lijst? Handmatig toevoegen</button>:(
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:12}}>
               <input value={customNaam} onChange={e=>setCustomNaam(e.target.value)} placeholder="Naam *" style={{...sInput,marginBottom:6}}/>
               <input value={customRef} onChange={e=>setCustomRef(e.target.value)} placeholder="Ref (optioneel)" style={{...sInput,marginBottom:8}}/>
               <div style={{display:'flex',gap:8}}>
-                <button onClick={()=>{if(!customNaam.trim())return;setActiveInst({id:'c-'+uid(),naam:customNaam.trim(),ref:customRef.trim(),kleur:'#fff'});setShowCustom(false);setCustomNaam('');setCustomRef('');setOpenSec(null);}}
-                  disabled={!customNaam.trim()} style={{...sBtn('green'),flex:1,opacity:customNaam.trim()?1:.4}}>Selecteer</button>
+                <button onClick={()=>{
+                  if(!customNaam.trim())return;
+                  const id='c-'+uid();
+                  selecteerInst({id,naam:customNaam.trim(),ref:customRef.trim(),kleur:'#fff'});
+                  setShowCustom(false);setCustomNaam('');setCustomRef('');
+                }} disabled={!customNaam.trim()} style={{...sBtn('green'),flex:1,opacity:customNaam.trim()?1:.4}}>Selecteer</button>
                 <button onClick={()=>{setShowCustom(false);setCustomNaam('');setCustomRef('');}} style={sBtn('ghost')}>Annuleer</button>
               </div>
             </div>
           )}
         </div>
 
+        {/* INSTALLATIELIJST */}
         <div style={{fontSize:10,color:C.muted,marginBottom:6,letterSpacing:1,fontWeight:700}}>INSTALLATIES ({gefilterd.length})</div>
         <div style={{display:'flex',flexDirection:'column',gap:4}}>
           {gefilterd.map(inst=>{
             const n=telIngevuld(inst.id);
-            const act=activeInst?.id===inst.id;
+            const nf=telFotos(inst.id);
+            const act=activeInstId===inst.id;
             return(
-              <div key={inst.id} onClick={()=>{setActiveInst(inst);setOpenSec(null);}}
+              <div key={inst.id} onClick={()=>selecteerInst(inst)}
                 style={{background:act?'#1a1c0e':C.card,border:act?`2px solid ${C.yellow}`:`1px solid ${C.border}`,borderRadius:8,padding:'10px 14px',cursor:'pointer',display:'flex',alignItems:'center',gap:10}}>
                 <KleurDot kleur={inst.kleur}/>
                 <div style={{flex:1}}>
                   <div style={{fontSize:12,fontWeight:700,color:act?C.yellow:C.text}}>{inst.naam}</div>
                   <div style={{fontSize:10,color:C.muted}}>{inst.ref} · {inst.afd}</div>
                 </div>
-                {n>0&&<div style={{background:C.green,color:'#fff',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:800}}>{n}/19</div>}
+                {n>0&&<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                  {nf>0&&<span style={{fontSize:10,color:C.blue}}>📷{nf}</span>}
+                  <div style={{background:C.green,color:'#fff',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:800}}>{n}/19</div>
+                </div>}
               </div>
             );
           })}
@@ -439,11 +599,12 @@ export default function RondgangModule({onTerug}){
         <div style={{height:80}}/>
       </div>
 
-      {totaal>0&&(
+      {/* FLOATING EXPORT KNOP */}
+      {totaal>0&&!activeInstId&&(
         <div style={{position:'fixed',bottom:16,left:'50%',transform:'translateX(-50%)',zIndex:100}}>
-          <button onClick={()=>exportToWord({datum:datumNu(),inspecteur,site,installaties})}
+          <button onClick={exportAlles}
             style={{...sBtn('green'),padding:'12px 24px',fontSize:14,boxShadow:'0 4px 20px rgba(0,0,0,0.5)',borderRadius:24}}>
-            📄 Export Word ({totaal} installaties)
+            📄 Word Export ({totaal} installaties)
           </button>
         </div>
       )}
